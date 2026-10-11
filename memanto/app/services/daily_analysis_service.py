@@ -23,6 +23,10 @@ from memanto.app.config import get_data_dir, settings
 from memanto.app.core import agent_namespace
 from memanto.app.services.session_service import get_session_service
 from memanto.app.utils.errors import MemoryOperationError
+from memanto.app.utils.prompt_safety import (
+    untrusted_data_instruction,
+    wrap_untrusted_content,
+)
 from memanto.app.utils.temporal_helpers import (
     format_current_local_time,
     format_local_time,
@@ -34,6 +38,10 @@ from memanto.app.utils.validation import validate_output_path, validate_safe_id
 # framing. Asserted against in tests/test_daily_summary_query_length.py.
 _EMBEDDING_CONTEXT_TOKENS = 2_048
 _EMBEDDING_QUERY_TOKEN_BUDGET = 1_800
+
+# Boundary tag for attacker-influenced session/memory content embedded in the
+# summarization and conflict-detection prompts (MEM-1852).
+SESSION_CONTENT_TAG = "session_content"
 
 
 @lru_cache(maxsize=8)
@@ -171,8 +179,10 @@ class DailyAnalysisService:
 Summarize the following session memories from {date} into a concise natural language daily summary.
 Focus on key themes, accomplishments, and high-level activities.
 
+{untrusted_data_instruction(SESSION_CONTENT_TAG)}
+
 Sessions Content:
-{retrieval_query}
+{wrap_untrusted_content(retrieval_query, SESSION_CONTENT_TAG)}
 """
 
         footer_prompt = f"""
@@ -399,6 +409,8 @@ Format the output as a Markdown report:
 
         header_prompt = f"""Analyze the following session memories from {date} against historical knowledge for this agent.
 
+{untrusted_data_instruction(SESSION_CONTENT_TAG)}
+
 CRITICAL INSTRUCTIONS:
 1. ONLY report conflicts, contradictions, updates, or duplicates that involve AT LEAST ONE of the memories from the "Recent Sessions Content" provided below.
 2. DO NOT report conflicts that exist solely between two or more historical memories (Old vs Old). We are only interested in how the NEW data interacts with existing knowledge.
@@ -412,7 +424,7 @@ Identify:
 4. Conflicts: Semantic disagreements between new and historical memories.
 
 Recent Sessions Content:
-{query_digest}"""
+{wrap_untrusted_content(query_digest, SESSION_CONTENT_TAG)}"""
 
         footer_prompt = """You MUST respond with ONLY a valid JSON array. No markdown, no explanation, no code fences.
 Each element must be an object with these exact keys:

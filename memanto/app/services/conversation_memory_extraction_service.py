@@ -13,6 +13,12 @@ from typing import Any
 from memanto.app.clients.backend import get_active_llm_model
 from memanto.app.constants import VALID_MEMORY_TYPES
 from memanto.app.utils.json_extraction import iter_json_arrays
+from memanto.app.utils.prompt_safety import (
+    neutralize_llm_tag,
+    wrap_untrusted_content,
+)
+
+CONVERSATION_CONTENT_TAG = "conversation_content"
 
 PRIVATE_KEY_PATTERN = re.compile(
     r"-----BEGIN [A-Z0-9_\- ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9_\- ]*PRIVATE KEY-----"
@@ -146,12 +152,12 @@ class ConversationMemoryExtractionService:
         lines: list[str] = []
         total = 0
         for i, message in enumerate(messages):
-            # Escape the closing tag to prevent prompt injection breakouts
-            safe_role = message["role"].replace(
-                "</conversation_content>", "<\\/conversation_content>"
-            )
-            safe_content = message["content"].replace(
-                "</conversation_content>", "<\\/conversation_content>"
+            # Neutralize every case/whitespace variant of the boundary tag so a
+            # stored payload cannot forge the closing delimiter and break out of
+            # the untrusted block (MEM-1852).
+            safe_role = neutralize_llm_tag(message["role"], CONVERSATION_CONTENT_TAG)
+            safe_content = neutralize_llm_tag(
+                message["content"], CONVERSATION_CONTENT_TAG
             )
             line = f"{safe_role.strip()}: {safe_content.strip()}"
             # Account for the newline separator that join() adds between
@@ -167,7 +173,7 @@ class ConversationMemoryExtractionService:
                 break
             lines.append(line)
         content_block = "\n".join(lines)
-        return f"<conversation_content>\n{content_block}\n</conversation_content>"
+        return wrap_untrusted_content(content_block, CONVERSATION_CONTENT_TAG)
 
     def _header_prompt(self, max_memories: int) -> str:
         memory_types = ", ".join(sorted(VALID_MEMORY_TYPES))
@@ -213,16 +219,19 @@ class ConversationMemoryExtractionService:
                 continue
             # SECURITY (Memanto #1852): defense-in-depth against indirect
             # prompt injection. Drop candidates whose content or title looks like an
-            # embedded directive/override rather than a genuine memory.
+            # embedded directive/override rather than a genuine memory. Word
+            # separators are matched with ``\s+`` so multiple spaces, tabs, or
+            # newlines between the words do not slip a directive past the
+            # single-space literals this list used to match.
             _INJECTION_PATTERNS = (
-                r"\bignore previous instructions\b",
-                r"\bignore prior instructions\b",
-                r"\bsystem override\b",
+                r"\bignore\s+previous\s+instructions\b",
+                r"\bignore\s+prior\s+instructions\b",
+                r"\bsystem\s+override\b",
                 r"^system:\s*",
                 r"\bexfiltrate\b",
-                r"\bsend all memories\b",
-                r"\boverride previous\b",
-                r"\bdisregard previous\b",
+                r"\bsend\s+all\s+memories\b",
+                r"\boverride\s+previous\b",
+                r"\bdisregard\s+previous\b",
             )
             title = str(item.get("title", "")).strip()
 
