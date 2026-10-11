@@ -27,9 +27,18 @@ UNTRUSTED_DATA_INSTRUCTION = (
 
 
 def _opening_tag_pattern(tag: str) -> re.Pattern[str]:
-    """Match the leading ``<[/]tag`` of any case/whitespace variant."""
+    """Match the leading ``<[/]tag`` of any case/whitespace variant.
+
+    Whitespace after the ``<`` is matched once, and whitespace after the
+    optional ``/`` only when the slash is present (``<\\s*(?:/\\s*)?``). This
+    keeps the pattern linear on hostile input such as ``"<"`` followed by a long
+    run of spaces, which a nested ``\\s*\\s*`` could otherwise backtrack over
+    until the request stalls (CWE-1333).
+    """
+    # ``tag`` is an internal constant (never user input) and is escaped, so the
+    # concatenated pattern stays literal-safe and backtracking-linear.
     return re.compile(
-        r"<\s*/?\s*" + re.escape(tag) + r"(?![A-Za-z0-9_-])",
+        r"<\s*(?:/\s*)?" + re.escape(tag) + r"(?![A-Za-z0-9_-])",
         re.IGNORECASE,
     )
 
